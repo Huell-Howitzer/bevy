@@ -51,8 +51,69 @@ const WALL_COLOR: Color = Color::srgb(0.8, 0.8, 0.8);
 const TEXT_COLOR: Color = Color::srgb(0.5, 0.5, 1.0);
 const SCORE_COLOR: Color = Color::srgb(1.0, 0.5, 0.5);
 
+struct Level {
+    brick_layout: Vec<Vec<Option<Brick>>>,
+}
+
+// Define the levels using fixed-size arrays
+
+fn create_level_1() -> Level {
+    Level {
+        brick_layout: vec![
+            vec![Some(Brick), None, Some(Brick)],
+            vec![Some(Brick), Some(Brick), Some(Brick)],
+            vec![Some(Brick), Some(Brick), Some(Brick)],
+            vec![Some(Brick), Some(Brick), Some(Brick)],
+        ],
+    }
+}
+
+fn create_level_2() -> Level {
+    Level {
+        brick_layout: vec![
+            vec![Some(Brick), Some(Brick), Some(Brick)],
+            vec![Some(Brick), None, Some(Brick)],
+            vec![Some(Brick), Some(Brick), Some(Brick)],
+            vec![Some(Brick), Some(Brick), Some(Brick)],
+        ],
+    }
+}
+
+
+#[derive(Resource)]
+struct GameState {
+    levels: Vec<Level>,
+    current_level: usize,
+}
+
+impl Default for GameState {
+    fn default() -> Self {
+        GameState {
+            levels: vec![create_level_1(), create_level_2()],
+            current_level: 0,
+        }
+    }
+}
+
+
+fn next_level(game_state: &mut GameState) {
+    if game_state.current_level + 1 < game_state.levels.len() {
+        game_state.current_level += 1;
+    } else {
+        println!("You have completed all levels!");
+    }
+}
+
+
+
 fn main() {
     App::new()
+        // Insert resources first
+        .insert_resource(GameState::default())
+        .insert_resource(Score(0))
+        .insert_resource(ClearColor(BACKGROUND_COLOR))
+
+        // Add plugins after inserting resources
         .add_plugins(DefaultPlugins)
         .add_plugins(
             stepping::SteppingPlugin::default()
@@ -60,9 +121,11 @@ fn main() {
                 .add_schedule(FixedUpdate)
                 .at(Val::Percent(35.0), Val::Percent(50.0)),
         )
-        .insert_resource(Score(0))
-        .insert_resource(ClearColor(BACKGROUND_COLOR))
+
+        // Register events
         .add_event::<CollisionEvent>()
+
+        // Add systems
         .add_systems(Startup, setup)
         // Add our gameplay simulation systems to the fixed timestep schedule
         // which runs at 64 Hz by default
@@ -183,23 +246,73 @@ struct Score(usize);
 #[derive(Component)]
 struct ScoreboardUi;
 
+fn load_level(level: &Level, commands: &mut Commands) {
+    // Determine the number of bricks per row and total rows
+    let bricks_per_row = level.brick_layout[0].len();
+    let total_rows = level.brick_layout.len();
+
+    // Calculate total width of a row: (brick width * number of bricks) + (gap * (number of bricks - 1))
+    let total_width = bricks_per_row as f32 * BRICK_SIZE.x + (bricks_per_row as f32 - 1.) * GAP_BETWEEN_BRICKS;
+
+    // Starting x position to center bricks horizontally
+    let start_x = -total_width / 2. + BRICK_SIZE.x / 2.;
+
+    // Starting y position near the top wall
+    let start_y = TOP_WALL - GAP_BETWEEN_BRICKS_AND_CEILING - BRICK_SIZE.y / 2.;
+
+    for (row_idx, row) in level.brick_layout.iter().enumerate() {
+        for (brick_idx, brick) in row.iter().enumerate() {
+            if brick.is_some() {
+                // Calculate brick position
+                let x = start_x + brick_idx as f32 * (BRICK_SIZE.x + GAP_BETWEEN_BRICKS);
+                let y = start_y - row_idx as f32 * (BRICK_SIZE.y + GAP_BETWEEN_BRICKS);
+
+                // Spawn brick with Collider
+                commands.spawn(SpriteBundle {
+                    sprite: Sprite {
+                        color: BRICK_COLOR,
+                        ..Default::default()
+                    },
+                    transform: Transform {
+                        translation: Vec3::new(x, y, 0.0),
+                        scale: Vec3::new(BRICK_SIZE.x, BRICK_SIZE.y, 1.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                  .insert(Brick)
+                  .insert(Collider); // Ensure Collider is added
+            }
+        }
+    }
+}
+
+
+
+
 // Add the game's entities to our world
+use bevy::prelude::*;
+use bevy::sprite::Material2d;
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     asset_server: Res<AssetServer>,
+    mut game_state: ResMut<GameState>,
+    mut materials: ResMut<Assets<ColorMaterial>>, // Added parameter
 ) {
+    // Initialize the game state
+    game_state.current_level = 0;
+
     // Camera
     commands.spawn(Camera2dBundle::default());
 
-    // Sound
+    // Sound Resource for Ball Collision
     let ball_collision_sound = asset_server.load("sounds/breakout_collision.ogg");
     commands.insert_resource(CollisionSound(ball_collision_sound));
 
     // Paddle
     let paddle_y = BOTTOM_WALL + GAP_BETWEEN_PADDLE_AND_FLOOR;
-
     commands.spawn((
         SpriteBundle {
             transform: Transform {
@@ -217,13 +330,13 @@ fn setup(
         Collider,
     ));
 
-    // Ball
+    // Ball with ColorMaterial
     commands.spawn((
-        MaterialMesh2dBundle {
-            mesh: meshes.add(Circle::default()).into(),
-            material: materials.add(BALL_COLOR),
+        MaterialMesh2dBundle::<ColorMaterial> { // Specified ColorMaterial
+            mesh: meshes.add(Mesh::from(Circle::new(BALL_DIAMETER / 2.0))).into(),
+            material: materials.add(ColorMaterial::from(BALL_COLOR)), // Assigned material
             transform: Transform::from_translation(BALL_STARTING_POSITION)
-                .with_scale(Vec2::splat(BALL_DIAMETER).extend(1.)),
+              .with_scale(Vec3::new(1.0, 1.0, 1.0)),
             ..default()
         },
         Ball,
@@ -239,21 +352,24 @@ fn setup(
                 TextStyle {
                     font_size: SCOREBOARD_FONT_SIZE,
                     color: TEXT_COLOR,
-                    ..default()
+                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
                 },
             ),
             TextSection::from_style(TextStyle {
                 font_size: SCOREBOARD_FONT_SIZE,
                 color: SCORE_COLOR,
-                ..default()
+                font: asset_server.load("fonts/FiraSans-Bold.ttf"),
             }),
         ])
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: SCOREBOARD_TEXT_PADDING,
-            left: SCOREBOARD_TEXT_PADDING,
-            ..default()
-        }),
+          .with_style(Style {
+              position_type: PositionType::Absolute,
+              margin: UiRect { // Changed from `position` to `margin`
+                  top: SCOREBOARD_TEXT_PADDING,
+                  left: SCOREBOARD_TEXT_PADDING,
+                  ..default()
+              },
+              ..default()
+          }),
     ));
 
     // Walls
@@ -262,60 +378,12 @@ fn setup(
     commands.spawn(WallBundle::new(WallLocation::Bottom));
     commands.spawn(WallBundle::new(WallLocation::Top));
 
-    // Bricks
-    let total_width_of_bricks = (RIGHT_WALL - LEFT_WALL) - 2. * GAP_BETWEEN_BRICKS_AND_SIDES;
-    let bottom_edge_of_bricks = paddle_y + GAP_BETWEEN_PADDLE_AND_BRICKS;
-    let total_height_of_bricks = TOP_WALL - bottom_edge_of_bricks - GAP_BETWEEN_BRICKS_AND_CEILING;
-
-    assert!(total_width_of_bricks > 0.0);
-    assert!(total_height_of_bricks > 0.0);
-
-    // Given the space available, compute how many rows and columns of bricks we can fit
-    let n_columns = (total_width_of_bricks / (BRICK_SIZE.x + GAP_BETWEEN_BRICKS)).floor() as usize;
-    let n_rows = (total_height_of_bricks / (BRICK_SIZE.y + GAP_BETWEEN_BRICKS)).floor() as usize;
-    let n_vertical_gaps = n_columns - 1;
-
-    // Because we need to round the number of columns,
-    // the space on the top and sides of the bricks only captures a lower bound, not an exact value
-    let center_of_bricks = (LEFT_WALL + RIGHT_WALL) / 2.0;
-    let left_edge_of_bricks = center_of_bricks
-        // Space taken up by the bricks
-        - (n_columns as f32 / 2.0 * BRICK_SIZE.x)
-        // Space taken up by the gaps
-        - n_vertical_gaps as f32 / 2.0 * GAP_BETWEEN_BRICKS;
-
-    // In Bevy, the `translation` of an entity describes the center point,
-    // not its bottom-left corner
-    let offset_x = left_edge_of_bricks + BRICK_SIZE.x / 2.;
-    let offset_y = bottom_edge_of_bricks + BRICK_SIZE.y / 2.;
-
-    for row in 0..n_rows {
-        for column in 0..n_columns {
-            let brick_position = Vec2::new(
-                offset_x + column as f32 * (BRICK_SIZE.x + GAP_BETWEEN_BRICKS),
-                offset_y + row as f32 * (BRICK_SIZE.y + GAP_BETWEEN_BRICKS),
-            );
-
-            // brick
-            commands.spawn((
-                SpriteBundle {
-                    sprite: Sprite {
-                        color: BRICK_COLOR,
-                        ..default()
-                    },
-                    transform: Transform {
-                        translation: brick_position.extend(0.0),
-                        scale: Vec3::new(BRICK_SIZE.x, BRICK_SIZE.y, 1.0),
-                        ..default()
-                    },
-                    ..default()
-                },
-                Brick,
-                Collider,
-            ));
-        }
-    }
+    // Bricks for the initial level
+    load_level(&game_state.levels[game_state.current_level], &mut commands);
 }
+
+
+
 
 fn move_paddle(
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -363,6 +431,8 @@ fn check_for_collisions(
     mut ball_query: Query<(&mut Velocity, &Transform), With<Ball>>,
     collider_query: Query<(Entity, &Transform, Option<&Brick>), With<Collider>>,
     mut collision_events: EventWriter<CollisionEvent>,
+    mut game_state: ResMut<GameState>,
+    brick_query: Query<Entity, With<Brick>>,
 ) {
     let (mut ball_velocity, ball_transform) = ball_query.single_mut();
 
@@ -376,11 +446,13 @@ fn check_for_collisions(
         );
 
         if let Some(collision) = collision {
+            println!("Collision detected with Entity: {:?}", collider_entity);
             // Sends a collision event so that other systems can react to the collision
             collision_events.send_default();
 
             // Bricks should be despawned and increment the scoreboard on collision
             if maybe_brick.is_some() {
+                println!("Brick hit! Despawning brick: {:?}", collider_entity);
                 commands.entity(collider_entity).despawn();
                 **score += 1;
             }
@@ -400,16 +472,49 @@ fn check_for_collisions(
 
             // Reflect velocity on the x-axis if we hit something on the x-axis
             if reflect_x {
+                println!("Reflecting ball velocity on the X-axis");
                 ball_velocity.x = -ball_velocity.x;
             }
 
             // Reflect velocity on the y-axis if we hit something on the y-axis
             if reflect_y {
+                println!("Reflecting ball velocity on the Y-axis");
                 ball_velocity.y = -ball_velocity.y;
             }
         }
     }
+
+    if all_bricks_are_cleared(brick_query) {
+        if game_state.current_level + 1 < game_state.levels.len() {
+            println!("All bricks cleared! Proceeding to next level.");
+            next_level(&mut game_state);
+            load_level(&game_state.levels[game_state.current_level], &mut commands);
+        } else {
+            println!("You have completed all levels!");
+            // Optionally, trigger a victory screen or reset the game
+        }
+    }
 }
+
+
+
+
+
+fn despawn_bricks(
+    mut commands: Commands,
+    brick_query: Query<Entity, With<Brick>>,
+) {
+    for entity in &brick_query {
+        commands.entity(entity).despawn();
+    }
+}
+
+
+// Check if the level vector is empty
+fn all_bricks_are_cleared(brick_query: Query<Entity, With<Brick>>) -> bool {
+    brick_query.is_empty()
+}
+
 
 fn play_collision_sound(
     mut commands: Commands,
